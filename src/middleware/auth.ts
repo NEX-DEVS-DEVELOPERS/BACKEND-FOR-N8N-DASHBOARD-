@@ -1,16 +1,17 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifyToken } from '../utils/encryption';
+import { verifyToken, hashToken } from '../utils/encryption';
+import { querySingle } from '../config/database';
 import { logger } from '../utils/logger';
 import { ApiErrorResponse } from '../types/api.types';
 
 /**
  * Authentication middleware to verify JWT token
  */
-export function authenticate(
+export async function authenticate(
     req: Request,
     res: Response<ApiErrorResponse>,
     next: NextFunction
-): void {
+): Promise<void> {
     try {
         // Get token from Authorization header
         const authHeader = req.headers.authorization;
@@ -27,6 +28,22 @@ export function authenticate(
 
         // Verify token
         const payload = verifyToken(token);
+
+        // Check if token is blacklisted
+        const tokenHash = hashToken(token);
+        const blacklisted = await querySingle(
+            `SELECT id FROM token_blacklist WHERE token_hash = $1`,
+            [tokenHash]
+        );
+
+        if (blacklisted) {
+            res.status(401).json({
+                success: false,
+                error: 'Token has been invalidated',
+                statusCode: 401,
+            });
+            return;
+        }
 
         // Attach user to request
         req.user = payload;
@@ -49,11 +66,11 @@ export function authenticate(
 /**
  * Optional authentication middleware (doesn't fail if no token)
  */
-export function optionalAuthenticate(
+export async function optionalAuthenticate(
     req: Request,
-    res: Response,
+    _res: Response,
     next: NextFunction
-): void {
+): Promise<void> {
     try {
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {

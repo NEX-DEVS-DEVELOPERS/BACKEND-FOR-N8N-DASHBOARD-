@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { query, querySingle } from '../config/database';
-import { hashPassword, verifyPassword, generateAccessToken, getTokenExpiration } from '../utils/encryption';
+import { hashPassword, verifyPassword, generateAccessToken, generateRefreshToken, verifyToken, getTokenExpiration, hashToken } from '../utils/encryption';
 import { User, LoginDTO, LoginResponse, UserResponse } from '../types/auth.types';
 import { ApiErrorResponse, ApiSuccessResponse } from '../types/api.types';
 import { logger } from '../utils/logger';
@@ -51,14 +51,21 @@ export class AuthController {
                 return;
             }
 
-            // Generate JWT token
-            const token = generateAccessToken({
+            // Generate JWT tokens
+            const accessToken = generateAccessToken({
                 userId: user.id,
                 username: user.username,
                 planTier: user.planTier,
             });
 
-            const expiresAt = getTokenExpiration(env.JWT_EXPIRES_IN);
+            const refreshToken = generateRefreshToken({
+                userId: user.id,
+                username: user.username,
+                planTier: user.planTier,
+            });
+
+            const accessExpiresAt = getTokenExpiration(env.JWT_EXPIRES_IN);
+            const refreshExpiresAt = getTokenExpiration(env.JWT_REFRESH_EXPIRES_IN);
 
             // Remove password hash from response
             const { passwordHash, ...userResponse } = user;
@@ -67,8 +74,10 @@ export class AuthController {
 
             res.status(200).json({
                 success: true,
-                token,
-                expiresAt: expiresAt.toISOString(),
+                token: accessToken,
+                refreshToken,
+                expiresAt: accessExpiresAt.toISOString(),
+                refreshExpiresAt: refreshExpiresAt.toISOString(),
                 user: userResponse,
             });
         } catch (error) {
@@ -135,22 +144,49 @@ export class AuthController {
     }
 
     /**
-     * Logout handler
+     * Logout handler with token blacklisting
      */
     async logout(
         req: Request,
         res: Response<ApiSuccessResponse>
     ): Promise<void> {
-        // Since we're using stateless JWT, logout is handled client-side by deleting the token
-        // We just log the event
-        if (req.user) {
-            logger.info('User logged out:', { userId: req.user.userId });
-        }
+        try {
+            if (req.user) {
+                // Get token from Authorization header
+                const authHeader = req.headers.authorization;
+                if (authHeader && authHeader.startsWith('Bearer ')) {
+                    const token = authHeader.substring(7);
+                    const tokenHash = hashToken(token);
 
-        res.status(200).json({
-            success: true,
-            message: 'Logged out successfully',
-        });
+                    // Get token expiration
+                    const decoded = verifyToken(token);
+                    const expiresAt = new Date(decoded.exp! * 1000);
+
+                    // Add token to blacklist
+                    await query(
+                        `INSERT INTO token_blacklist (token_hash, user_id, expires_at, reason)
+                         VALUES ($1, $2, $3, $4)`,
+                        [tokenHash, req.user.userId, expiresAt, 'logout']
+                    );
+
+                    logger.info('User logged out and token blacklisted:', { userId: req.user.userId });
+                } else {
+                    logger.info('User logged out:', { userId: req.user.userId });
+                }
+            }
+
+            res.status(200).json({
+                success: true,
+                message: 'Logged out successfully',
+            });
+        } catch (error) {
+            logger.error('Logout error:', error);
+            // Still return success even if blacklisting fails
+            res.status(200).json({
+                success: true,
+                message: 'Logged out successfully',
+            });
+        }
     }
 
     /**
@@ -427,6 +463,98 @@ export class AuthController {
             res.status(500).json({
                 success: false,
                 error: 'Failed to create user',
+                statusCode: 500,
+            });
+        }
+    }
+
+    /**
+     * Refresh access token using refresh token
+     */
+    async refreshToken(
+        req: Request<{}, {}, { refreshToken: string }>,
+        res: Response<ApiSuccessResponse<{ token: string; expiresAt: string }> | ApiErrorResponse>
+    ): Promise<void> {
+        try {
+            const { refreshToken } = req.body;
+
+            if (!refreshToken) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Refresh token is required',
+                    statusCode: 400,
+                });
+                return;
+            }
+
+            // Verify refresh token
+            let decoded;
+            try {
+                decoded = verifyToken(refreshToken);
+            } catch (error) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Invalid or expired refresh token',
+                    statusCode: 401,
+                });
+                return;
+            }
+
+            // Check if token is blacklisted
+            const tokenHash = hashToken(refreshToken);
+            const blacklisted = await querySingle(
+                `SELECT id FROM token_blacklist WHERE token_hash = $1`,
+                [tokenHash]
+            );
+
+            if (blacklisted) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Token has been invalidated',
+                    statusCode: 401,
+                });
+                return;
+            }
+
+            // Fetch fresh user data
+            const user = await querySingle<User>(
+                `SELECT id, username, plan_tier as "planTier"
+                 FROM users WHERE id = $1`,
+                [decoded.userId]
+            );
+
+            if (!user) {
+                res.status(404).json({
+                    success: false,
+                    error: 'User not found',
+                    statusCode: 404,
+                });
+                return;
+            }
+
+            // Generate new access token with fresh user data
+            const newAccessToken = generateAccessToken({
+                userId: user.id,
+                username: user.username,
+                planTier: user.planTier,
+            });
+
+            const expiresAt = getTokenExpiration(env.JWT_EXPIRES_IN);
+
+            logger.info('Access token refreshed:', { userId: user.id });
+
+            res.status(200).json({
+                success: true,
+                data: {
+                    token: newAccessToken,
+                    expiresAt: expiresAt.toISOString(),
+                },
+            });
+        } catch (error) {
+            logger.error('Refresh token error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to refresh token',
                 statusCode: 500,
             });
         }

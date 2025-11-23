@@ -1,5 +1,6 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { env } from '../config/env';
 import { TokenPayload } from '../types/auth.types';
 
@@ -63,11 +64,11 @@ export function verifyToken(token: string): TokenPayload {
 
 /**
  * Calculate token expiration timestamp
- * @param expiresIn Time string (e.g., "12h", "7d")
+ * @param expiresIn Time string (e.g., "15m", "12h", "7d")
  * @returns Expiration date
  */
 export function getTokenExpiration(expiresIn: string): Date {
-    const match = expiresIn.match(/^(\d+)([hd])$/);
+    const match = expiresIn.match(/^(\d+)([mhd])$/);
     if (!match) {
         throw new Error('Invalid expiration format');
     }
@@ -76,11 +77,22 @@ export function getTokenExpiration(expiresIn: string): Date {
     const unit = match[2];
 
     const now = new Date();
-    if (unit === 'h') {
+    if (unit === 'm') {
+        now.setMinutes(now.getMinutes() + value);
+    } else if (unit === 'h') {
         now.setHours(now.getHours() + value);
     } else if (unit === 'd') {
         now.setDate(now.getDate() + value);
     }
 
     return now;
+}
+
+/**
+ * Generate SHA-256 hash of a token for blacklist storage
+ * @param token JWT token
+ * @returns SHA-256 hash of the token
+ */
+export function hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
 }

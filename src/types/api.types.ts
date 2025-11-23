@@ -11,6 +11,7 @@ export interface ApiErrorResponse {
     error: string;
     details?: any;
     statusCode?: number;
+    correlationId?: string;
 }
 
 export type ApiResponse<T = any> = ApiSuccessResponse<T> | ApiErrorResponse;

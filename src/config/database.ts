@@ -164,6 +164,18 @@ export async function initializeDatabase(): Promise<void> {
       )
     `);
 
+    // Token Blacklist table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS token_blacklist (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        token_hash VARCHAR(64) NOT NULL UNIQUE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMP NOT NULL,
+        reason VARCHAR(100),
+        blacklisted_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
     // User Preferences table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_preferences (
@@ -185,6 +197,130 @@ export async function initializeDatabase(): Promise<void> {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_support_requests_user_id ON support_requests(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_support_requests_submitted_at ON support_requests(submitted_at)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_token_blacklist_hash ON token_blacklist(token_hash)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at)');
+
+    // ==============================================
+    // CHATBOT TABLES
+    // ==============================================
+    logger.info('Initializing chatbot tables...');
+
+    // Chat Sessions Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS chat_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        session_token VARCHAR(255) UNIQUE NOT NULL,
+        started_at TIMESTAMP DEFAULT NOW(),
+        last_activity TIMESTAMP DEFAULT NOW(),
+        message_count INTEGER DEFAULT 0,
+        plan_tier VARCHAR(20) NOT NULL DEFAULT 'free',
+        is_active BOOLEAN DEFAULT true,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Chat Messages Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id SERIAL PRIMARY KEY,
+        session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+        content TEXT NOT NULL,
+        intent VARCHAR(100),
+        sentiment VARCHAR(20),
+        model_used VARCHAR(100),
+        tokens_used INTEGER DEFAULT 0,
+        response_time_ms INTEGER,
+        was_cached BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Chatbot Analytics Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS chatbot_analytics (
+        id SERIAL PRIMARY KEY,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        plan_tier VARCHAR(20) NOT NULL,
+        total_messages INTEGER DEFAULT 0,
+        total_sessions INTEGER DEFAULT 0,
+        avg_response_time_ms FLOAT DEFAULT 0,
+        cache_hit_rate FLOAT DEFAULT 0,
+        intent_distribution JSONB DEFAULT '{}',
+        sentiment_distribution JSONB DEFAULT '{}',
+        model_usage JSONB DEFAULT '{}',
+        error_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(date, plan_tier)
+      )
+    `);
+
+    // Chatbot Feedback Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS chatbot_feedback (
+        id SERIAL PRIMARY KEY,
+        message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+        feedback_type VARCHAR(20) CHECK (feedback_type IN ('positive', 'negative', 'neutral')),
+        comment TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // AI Model Usage Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_model_usage (
+        id SERIAL PRIMARY KEY,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        model_name VARCHAR(100) NOT NULL,
+        plan_tier VARCHAR(20) NOT NULL,
+        request_count INTEGER DEFAULT 0,
+        total_tokens INTEGER DEFAULT 0,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        error_count INTEGER DEFAULT 0,
+        avg_response_time_ms FLOAT DEFAULT 0,
+        estimated_cost_usd FLOAT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(date, model_name, plan_tier)
+      )
+    `);
+
+    // Chatbot Cache Table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS chatbot_cache (
+        id SERIAL PRIMARY KEY,
+        query_hash VARCHAR(64) NOT NULL UNIQUE,
+        query_text TEXT NOT NULL,
+        response_text TEXT NOT NULL,
+        model_used VARCHAR(100) NOT NULL,
+        plan_tier VARCHAR(20) NOT NULL,
+        hit_count INTEGER DEFAULT 0,
+        last_hit_at TIMESTAMP,
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Chatbot indexes
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id ON chat_sessions(user_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_session_token ON chat_sessions(session_token)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_active ON chat_sessions(is_active) WHERE is_active = true');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id ON chat_messages(user_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chatbot_analytics_date ON chatbot_analytics(date DESC)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_ai_model_usage_date ON ai_model_usage(date DESC)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chatbot_cache_query_hash ON chatbot_cache(query_hash)');
+
+    logger.info('✅ Chatbot tables initialized successfully');
 
     logger.info('✅ Database schema initialized successfully');
   } catch (error) {

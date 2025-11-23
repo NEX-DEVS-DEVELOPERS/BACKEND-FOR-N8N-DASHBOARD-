@@ -1,7 +1,7 @@
 import express, { Application, Request, Response } from 'express';
 import morgan from 'morgan';
-import { helmetMiddleware, corsMiddleware, xssProtection } from './middleware/security';
-import { errorHandler, notFoundHandler } from './middleware/errorHandler';
+import { helmetMiddleware, corsMiddleware, xssProtection, requestSizeValidator } from './middleware/security';
+import { errorHandler, notFoundHandler, correlationIdMiddleware } from './middleware/errorHandler';
 import { apiLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
 
@@ -14,6 +14,7 @@ import formRoutes from './routes/forms.routes';
 import statsRoutes from './routes/stats.routes';
 import adminRoutes from './routes/admin.routes';
 import settingsRoutes from './routes/settings.routes';
+import chatbotRoutes from './routes/chatbot.routes';
 
 // Import services for health check
 import { testConnection } from './config/database';
@@ -33,9 +34,15 @@ export function createApp(): Application {
     app.use(helmetMiddleware);
     app.use(corsMiddleware);
 
-    // Body parsing middleware
+    // Correlation ID for request tracking
+    app.use(correlationIdMiddleware);
+
+    // Body parsing middleware with size limits
     app.use(express.json({ limit: '10mb' }));
     app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+    // Request size validation (additional layer)
+    app.use(requestSizeValidator(10240)); // 10MB limit
 
     // XSS protection
     app.use(xssProtection);
@@ -78,6 +85,7 @@ export function createApp(): Application {
     app.use('/api/stats', statsRoutes);
     app.use('/api/admin', adminRoutes);
     app.use('/api/settings', settingsRoutes);
+    app.use('/api/chatbot', chatbotRoutes);
 
     // 404 handler
     app.use(notFoundHandler);

@@ -32,7 +32,7 @@ router.get(
 
 /**
  * @route POST /api/auth/logout
- * @desc Logout user (client-side token removal)
+ * @desc Logout user and blacklist token
  * @access Private
  */
 router.post(
@@ -61,6 +61,17 @@ router.post(
     '/cancel-plan',
     authenticate,
     (req, res) => authController.cancelPlan(req, res)
+);
+
+/**
+ * @route POST /api/auth/refresh
+ * @desc Refresh access token using refresh token
+ * @access Public
+ */
+router.post(
+    '/refresh',
+    authLimiter,
+    (req, res) => authController.refreshToken(req, res)
 );
 
 export default router;
