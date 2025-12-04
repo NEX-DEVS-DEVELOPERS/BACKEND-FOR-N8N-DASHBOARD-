@@ -1,8 +1,18 @@
 import dotenv from 'dotenv';
+import path from 'path';
 import { z } from 'zod';
 
-// Load environment variables
-dotenv.config();
+// Load environment variables with explicit path (resolves CWD issues)
+const envPath = path.resolve(__dirname, '../../.env');
+const result = dotenv.config({ path: envPath });
+
+if (result.error) {
+    console.error(`[ENV ERROR] Failed to load .env from: ${envPath}`);
+    console.error(result.error);
+}
+
+// Debug: Uncomment to verify loading
+// console.log('[ENV DEBUG] GEMINI_API_KEY loaded:', !!process.env.GEMINI_API_KEY);
 
 // Environment variable schema
 const envSchema = z.object({
@@ -47,6 +57,9 @@ const envSchema = z.object({
     N8N_BASE_URL: z.string().url(),
     N8N_API_KEY: z.string().optional(),
     N8N_WEBHOOK_DOMAIN_WHITELIST: z.string().transform(val => val.split(',')),
+
+    // AI / Chatbot Configuration
+    GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required for the chatbot"),
 
     // Email (Optional)
     SMTP_HOST: z.string().optional(),

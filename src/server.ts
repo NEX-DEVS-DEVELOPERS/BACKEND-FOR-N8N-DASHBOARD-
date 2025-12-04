@@ -1,5 +1,6 @@
-import { createApp } from './app';
+// Import env first to ensure variables are loaded
 import { env } from './config/env';
+import { createApp } from './app';
 import { logger } from './utils/logger';
 import { initializeDatabase, testConnection } from './config/database';
 import { authController } from './controllers/authController';

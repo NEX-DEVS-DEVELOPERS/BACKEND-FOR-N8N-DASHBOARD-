@@ -189,6 +189,18 @@ export async function initializeDatabase(): Promise<void> {
       )
     `);
 
+    // Chat History table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS chat_history (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        message TEXT NOT NULL,
+        response TEXT NOT NULL,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
     // Create indexes
     await pool.query('CREATE INDEX IF NOT EXISTS idx_agents_user_id ON agents(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status)');
@@ -199,6 +211,8 @@ export async function initializeDatabase(): Promise<void> {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_token_blacklist_hash ON token_blacklist(token_hash)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at)');
 
     logger.info('✅ Database schema initialized successfully');
   } catch (error) {
