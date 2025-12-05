@@ -201,6 +201,48 @@ export async function initializeDatabase(): Promise<void> {
       )
     `);
 
+    // Dev Credit Logs table - tracks dev credit usage
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS dev_credit_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        hours_used DECIMAL(5,2) NOT NULL DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'pending',
+        category VARCHAR(50) DEFAULT 'change',
+        created_at TIMESTAMP DEFAULT NOW(),
+        completed_at TIMESTAMP
+      )
+    `);
+
+    // Changelog Entries table - system updates and changes
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS changelog_entries (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        category VARCHAR(50) NOT NULL DEFAULT 'improvement',
+        version VARCHAR(20),
+        is_public BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // User Activity Log table - tracks user actions
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_activity_log (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        action VARCHAR(100) NOT NULL,
+        description TEXT,
+        metadata JSONB DEFAULT '{}',
+        ip_address VARCHAR(45),
+        user_agent TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
     // Create indexes
     await pool.query('CREATE INDEX IF NOT EXISTS idx_agents_user_id ON agents(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status)');
@@ -213,6 +255,15 @@ export async function initializeDatabase(): Promise<void> {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at)');
+
+    // Dashboard table indexes
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_dev_credit_logs_user_id ON dev_credit_logs(user_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_dev_credit_logs_status ON dev_credit_logs(status)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_dev_credit_logs_created_at ON dev_credit_logs(created_at)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_changelog_entries_created_at ON changelog_entries(created_at)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_changelog_entries_is_public ON changelog_entries(is_public)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_user_activity_log_user_id ON user_activity_log(user_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_user_activity_log_created_at ON user_activity_log(created_at)');
 
     logger.info('✅ Database schema initialized successfully');
   } catch (error) {

@@ -14,6 +14,7 @@ import formRoutes from './routes/forms.routes';
 import statsRoutes from './routes/stats.routes';
 import adminRoutes from './routes/admin.routes';
 import settingsRoutes from './routes/settings.routes';
+import dashboardRoutes from './routes/dashboard.routes';
 import { chatbotRoutes } from './routes/chatbot.routes';
 
 // Import services for health check
@@ -86,6 +87,7 @@ export function createApp(): Application {
     app.use('/api/admin', adminRoutes);
     app.use('/api/settings', settingsRoutes);
     app.use('/api/chat', chatbotRoutes);
+    app.use('/api/dashboard', dashboardRoutes);
 
     // 404 handler
     app.use(notFoundHandler);
