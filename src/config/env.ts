@@ -58,8 +58,25 @@ const envSchema = z.object({
     N8N_API_KEY: z.string().optional(),
     N8N_WEBHOOK_DOMAIN_WHITELIST: z.string().transform(val => val.split(',')),
 
-    // AI / Chatbot Configuration
+    // AI / Chatbot Configuration - API Keys
     GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required for the chatbot"),
+    CLAUDE_API_KEY: z.string().optional(),
+    OPENAI_API_KEY: z.string().optional(),
+
+    // Model Configuration Per Plan
+    MODEL_FREE: z.string().default('gemini-flash-latest'),
+    MODEL_FREE_PROVIDER: z.string().default('gemini'),
+    MODEL_PRO: z.string().default('gemini-1.5-pro'),
+    MODEL_PRO_PROVIDER: z.string().default('gemini'),
+    MODEL_ENTERPRISE: z.string().default('claude-3-5-sonnet-20241022'),
+    MODEL_ENTERPRISE_PROVIDER: z.string().default('claude'),
+
+    // Simulation Mode - When true, all plans use Gemini Flash with different personas
+    MODEL_SIMULATION_MODE: z.string().transform(val => val === 'true').default('true'),
+
+    // Fallback Configuration
+    ENABLE_MODEL_FALLBACK: z.string().transform(val => val === 'true').default('true'),
+    MODEL_PRIORITY: z.string().transform(val => val.split(',')).default('gemini,openai,claude'),
 
     // Email (Optional)
     SMTP_HOST: z.string().optional(),

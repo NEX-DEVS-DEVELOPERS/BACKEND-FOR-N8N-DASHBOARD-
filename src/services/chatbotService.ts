@@ -4,6 +4,12 @@ import { query } from '../config/database';
 import { logger } from '../utils/logger';
 import { env } from '../config/env';
 
+// Model configuration type
+interface ModelConfig {
+    model: string;
+    provider: 'gemini' | 'claude' | 'openai';
+}
+
 export class ChatbotService {
     private ai: GoogleGenAI;
 
@@ -13,6 +19,41 @@ export class ChatbotService {
             apiKey: env.GEMINI_API_KEY
         });
     }
+
+    /**
+     * Get the model configuration based on user plan.
+     * In simulation mode, all plans use Gemini Flash but with different personas.
+     * When simulation mode is off, each plan uses its configured model/provider.
+     */
+    private getModelForPlan(userPlan: string): ModelConfig {
+        // Always use Gemini Flash in simulation mode for cost savings
+        if (env.MODEL_SIMULATION_MODE) {
+            return {
+                model: 'gemini-flash-latest',
+                provider: 'gemini'
+            };
+        }
+
+        // Real model selection based on plan
+        switch (userPlan.toLowerCase()) {
+            case 'enterprise':
+                return {
+                    model: env.MODEL_ENTERPRISE || 'claude-3-5-sonnet-20241022',
+                    provider: (env.MODEL_ENTERPRISE_PROVIDER as 'gemini' | 'claude' | 'openai') || 'claude'
+                };
+            case 'pro':
+                return {
+                    model: env.MODEL_PRO || 'gemini-1.5-pro',
+                    provider: (env.MODEL_PRO_PROVIDER as 'gemini' | 'claude' | 'openai') || 'gemini'
+                };
+            default: // free tier
+                return {
+                    model: env.MODEL_FREE || 'gemini-flash-latest',
+                    provider: (env.MODEL_FREE_PROVIDER as 'gemini' | 'claude' | 'openai') || 'gemini'
+                };
+        }
+    }
+
 
     /**
      * Get the welcome message based on the user's plan.
@@ -130,11 +171,12 @@ Your goal is to help users manage their agents, debug workflows, and optimize pe
                 parts: [{ text: message }]
             });
 
-            // Use the new SDK to generate response
-            const model = 'gemini-flash-latest'; // Updated model name
+            // Get model configuration based on user plan
+            const modelConfig = this.getModelForPlan(userPlan);
+            logger.info(`Using model: ${modelConfig.model} (provider: ${modelConfig.provider}) for plan: ${userPlan}`);
 
             const response = await this.ai.models.generateContent({
-                model,
+                model: modelConfig.model,
                 config: {
                     systemInstruction: systemInstruction,
                 },
