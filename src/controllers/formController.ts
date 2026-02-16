@@ -45,6 +45,40 @@ export class FormController {
                 return;
             }
 
+            // Check for cooldown
+            const planTier = (req.user.planTier || 'free').toLowerCase();
+            let cooldownMinutes = 60; // Default/Free
+            if (planTier === 'enterprise') {
+                cooldownMinutes = 2;
+            } else if (planTier === 'pro') {
+                cooldownMinutes = 40;
+            }
+
+            const lastRequest = await query<{ submitted_at: Date }>(
+                `SELECT submitted_at 
+                 FROM support_requests 
+                 WHERE user_id = $1 
+                 ORDER BY submitted_at DESC 
+                 LIMIT 1`,
+                [req.user.userId]
+            );
+
+            if (lastRequest && lastRequest.length > 0) {
+                const lastTime = new Date(lastRequest[0].submitted_at).getTime();
+                const now = new Date().getTime();
+                const diffMinutes = (now - lastTime) / (1000 * 60);
+
+                if (diffMinutes < cooldownMinutes) {
+                    const remainingMinutes = Math.ceil(cooldownMinutes - diffMinutes);
+                    res.status(429).json({
+                        success: false,
+                        error: `Please wait ${remainingMinutes} minutes before submitting another request.`,
+                        statusCode: 429,
+                    });
+                    return;
+                }
+            }
+
             const data = supportFormSchema.parse(req.body);
 
             // Insert into database

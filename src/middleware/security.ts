@@ -63,8 +63,8 @@ export const corsMiddleware = cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
-    exposedHeaders: ['X-Correlation-ID'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'x-admin-password', 'x-api-key'],
+    exposedHeaders: ['X-Correlation-ID', 'X-Response-Encrypted'],
 });
 
 /**

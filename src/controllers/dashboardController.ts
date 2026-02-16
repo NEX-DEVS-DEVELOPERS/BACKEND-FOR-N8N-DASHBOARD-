@@ -55,6 +55,7 @@ interface DashboardOverview {
         openTickets: number;
         resolvedTickets: number;
         recentTickets: SupportTicketSummary[];
+        nextTicketAt?: string | null;
     };
     changelog: ChangelogEntry[];
     activity: ActivityEntry[];
@@ -137,6 +138,27 @@ export class DashboardController {
                 [userId]
             );
 
+            // Calculate next ticket time
+            let nextTicketAt = null;
+            if (recentTickets && recentTickets.length > 0) {
+                const lastTicketTime = new Date(recentTickets[0].createdAt).getTime();
+                const planTierLower = (planTier || 'free').toLowerCase();
+                let cooldownMinutes = 60; // Default/Free
+
+                if (planTierLower === 'enterprise') {
+                    cooldownMinutes = 2;
+                } else if (planTierLower === 'pro') {
+                    cooldownMinutes = 40;
+                }
+
+                logger.info(`[Dashboard] Calculating cooldown for user ${userId} (${planTierLower}): ${cooldownMinutes} minutes`);
+
+                const nextTime = lastTicketTime + (cooldownMinutes * 60 * 1000);
+                if (nextTime > Date.now()) {
+                    nextTicketAt = new Date(nextTime).toISOString();
+                }
+            }
+
             // Get changelog entries (public only)
             const changelog = await query<any>(
                 `SELECT id, title, description, category, version, 
@@ -177,6 +199,7 @@ export class DashboardController {
                         priority: t.priority,
                         createdAt: t.createdAt,
                     })),
+                    nextTicketAt: nextTicketAt,
                 },
                 changelog: changelog,
                 activity: activity,
@@ -376,6 +399,303 @@ export class DashboardController {
                 return 3;
             default:
                 return 0;
+        }
+    }
+
+    /**
+     * Create a dev credit log entry
+     */
+    async createDevCreditLog(
+        req: Request,
+        res: Response<ApiSuccessResponse<{ log: DevCreditLog }> | ApiErrorResponse>
+    ): Promise<void> {
+        try {
+            if (!req.user) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    statusCode: 401,
+                });
+                return;
+            }
+
+            const userId = req.user.userId;
+            const planTier = req.user.planTier;
+            const { title, description, hoursUsed, category } = req.body;
+
+            // Validate input
+            if (!title || !hoursUsed || hoursUsed <= 0) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Title and valid hours_used are required',
+                    statusCode: 400,
+                });
+                return;
+            }
+
+            // Check allowance
+            const devCreditAllowance = this.getDevCreditAllowance(planTier);
+            if (devCreditAllowance === 0) {
+                res.status(403).json({
+                    success: false,
+                    error: 'Your plan does not include dev credits. Upgrade to Pro or Enterprise!',
+                    statusCode: 403,
+                });
+                return;
+            }
+
+            // Check usage for this month
+            const currentUsage = await querySingle<{ total: number }>(
+                `SELECT COALESCE(SUM(hours_used), 0) as total 
+                 FROM dev_credit_logs 
+                 WHERE user_id = $1 
+                 AND created_at >= date_trunc('month', NOW())`,
+                [userId]
+            );
+
+            const usedHours = parseFloat(currentUsage?.total?.toString() || '0');
+            if (usedHours + hoursUsed > devCreditAllowance) {
+                res.status(400).json({
+                    success: false,
+                    error: `Insufficient dev credits. You have ${devCreditAllowance - usedHours} hours remaining this month.`,
+                    statusCode: 400,
+                });
+                return;
+            }
+
+            // Create the log
+            const result = await querySingle<any>(
+                `INSERT INTO dev_credit_logs (user_id, title, description, hours_used, category, status)
+                 VALUES ($1, $2, $3, $4, $5, 'active')
+                 RETURNING id, title, description, hours_used as "hoursUsed", status, category, created_at as "createdAt"`,
+                [userId, title, description || '', hoursUsed, category || 'general']
+            );
+
+            logger.info('Dev credit log created:', { userId, title, hoursUsed });
+
+            // Send notification
+            try {
+                const { notificationController } = await import('./notificationController');
+                await notificationController.createNotification(
+                    userId,
+                    'Dev Credit Used',
+                    `${hoursUsed}h used for "${title}". Remaining: ${(devCreditAllowance - usedHours - hoursUsed).toFixed(1)}h this month.`,
+                    'info',
+                    { title, hoursUsed, category: category || 'general' }
+                );
+            } catch (notifError) {
+                logger.error('Failed to send dev credit notification:', notifError);
+            }
+
+            res.status(201).json({
+                success: true,
+                data: { log: result },
+            });
+        } catch (error) {
+            logger.error('Create dev credit log error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to create dev credit log',
+                statusCode: 500,
+            });
+        }
+    }
+
+    /**
+     * Get user invoices
+     */
+    async getInvoices(
+        req: Request,
+        res: Response<ApiSuccessResponse<{ invoices: any[] }> | ApiErrorResponse>
+    ): Promise<void> {
+        try {
+            if (!req.user) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    statusCode: 401,
+                });
+                return;
+            }
+
+            const userId = req.user.userId;
+
+            // Check if we need to generate a new invoice for this month (simple simulation)
+            // In a real app, this would be a background job or webhook from Stripe
+            const currentMonthStart = new Date();
+            currentMonthStart.setDate(1);
+            currentMonthStart.setHours(0, 0, 0, 0);
+
+            const existingInvoice = await querySingle<{ id: string }>(
+                `SELECT id FROM invoices 
+                 WHERE user_id = $1 
+                 AND created_at >= $2`,
+                [userId, currentMonthStart]
+            );
+
+            if (!existingInvoice) {
+                // Generate a new invoice for the current month
+                const planTier = req.user.planTier || 'free';
+                if (planTier !== 'free') {
+                    const amount = planTier === 'enterprise' ? 99.00 : ((req.user as any).has247Addon ? 39.00 : 29.00);
+                    const invoiceNum = `INV-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+                    await query(
+                        `INSERT INTO invoices (
+                            invoice_number, user_id, amount, plan_name, 
+                            billing_period_start, billing_period_end, status
+                        ) VALUES ($1, $2, $3, $4, $5, $6, 'paid')`,
+                        [
+                            invoiceNum,
+                            userId,
+                            amount,
+                            planTier.charAt(0).toUpperCase() + planTier.slice(1),
+                            currentMonthStart,
+                            new Date(new Date().setMonth(currentMonthStart.getMonth() + 1))
+                        ]
+                    );
+                }
+            }
+
+            // Check for ANY invoices, if none, create a historical demo invoice
+            const anyInvoice = await querySingle<{ id: string }>(
+                `SELECT id FROM invoices WHERE user_id = $1 LIMIT 1`,
+                [userId]
+            );
+
+            if (!anyInvoice) {
+                // Create a demo invoice from last month
+                const lastMonth = new Date();
+                lastMonth.setMonth(lastMonth.getMonth() - 1);
+                lastMonth.setDate(1);
+
+                await query(
+                    `INSERT INTO invoices (
+                        invoice_number, user_id, amount, plan_name, 
+                        billing_period_start, billing_period_end, status, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 'paid', $7)`,
+                    [
+                        `INV-${lastMonth.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+                        userId,
+                        29.00,
+                        'Pro',
+                        lastMonth,
+                        new Date(new Date(lastMonth).setMonth(lastMonth.getMonth() + 1)),
+                        lastMonth
+                    ]
+                );
+            }
+
+            const invoices = await query<any>(
+                `SELECT id, invoice_number as "invoiceNumber", amount, currency, status, 
+                        plan_name as "planName", billing_period_start as "billingStart", 
+                        billing_period_end as "billingEnd", created_at as "createdAt"
+                 FROM invoices 
+                 WHERE user_id = $1 
+                 ORDER BY created_at DESC`,
+                [userId]
+            );
+
+            res.status(200).json({
+                success: true,
+                data: { invoices },
+            });
+        } catch (error) {
+            logger.error('Invoices error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch invoices',
+                statusCode: 500,
+            });
+        }
+    }
+
+    /**
+     * Get active requests (support tickets and change requests)
+     */
+    async getActiveRequests(
+        req: Request,
+        res: Response<ApiSuccessResponse<{ requests: any[]; nextTicketAt?: string | null }> | ApiErrorResponse>
+    ): Promise<void> {
+        try {
+            if (!req.user) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    statusCode: 401,
+                });
+                return;
+            }
+
+            const userId = req.user.userId;
+            const planTier = req.user.planTier || 'free';
+
+            // Fetch active support tickets
+            const supportTickets = await query<any>(
+                `SELECT id, name as title, issue as description, status, 
+                        'support' as type, submitted_at as "createdAt"
+                 FROM support_requests 
+                 WHERE user_id = $1 AND status != 'resolved'
+                 ORDER BY submitted_at DESC`,
+                [userId]
+            );
+
+            // Fetch active change requests
+            const changeRequests = await query<any>(
+                `SELECT id, title, description, status, 
+                        'change' as type, submitted_at as "createdAt"
+                 FROM request_changes 
+                 WHERE user_id = $1 AND status != 'completed'
+                 ORDER BY submitted_at DESC`,
+                [userId]
+            );
+
+            // Combine and sort by date
+            const requests = [...supportTickets, ...changeRequests].sort((a, b) =>
+                new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            );
+
+            // Calculate next ticket time based on LAST support request (active or resolved)
+            const lastSupportRequest = await querySingle<{ submitted_at: Date }>(
+                `SELECT submitted_at 
+                 FROM support_requests 
+                 WHERE user_id = $1 
+                 ORDER BY submitted_at DESC 
+                 LIMIT 1`,
+                [userId]
+            );
+
+            let nextTicketAt = null;
+            if (lastSupportRequest) {
+                const lastTime = new Date(lastSupportRequest.submitted_at).getTime();
+                const planTierLower = (planTier || 'free').toLowerCase();
+                let cooldownMinutes = 60; // Default/Free
+
+                if (planTierLower === 'enterprise') {
+                    cooldownMinutes = 2;
+                } else if (planTierLower === 'pro') {
+                    cooldownMinutes = 40;
+                }
+
+                logger.info(`[ActiveRequests] Calculating cooldown for user ${userId} (${planTierLower}): ${cooldownMinutes} minutes`);
+
+                const nextTime = lastTime + (cooldownMinutes * 60 * 1000);
+                if (nextTime > Date.now()) {
+                    nextTicketAt = new Date(nextTime).toISOString();
+                }
+            }
+
+            res.status(200).json({
+                success: true,
+                data: { requests, nextTicketAt },
+            });
+        } catch (error) {
+            logger.error('Active requests error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch active requests',
+                statusCode: 500,
+            });
         }
     }
 }

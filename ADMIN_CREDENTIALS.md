@@ -2,7 +2,7 @@
 
 ## Admin Panel Access
 
-**URL**: `http://localhost:5174/nexdev`  
+**URL**: `http://localhost:5173/nexdev` (or your frontend port)  
 **Password**: `AdminNexDevs2024!Secure`
 
 ## Default User Login

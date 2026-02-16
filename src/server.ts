@@ -31,11 +31,22 @@ async function startServer() {
         // Create Express app
         const app = createApp();
 
+        // Create HTTP server
+        const { createServer } = await import('http');
+        const httpServer = createServer(app);
+
+        // Initialize Socket.IO
+        const { socketService } = await import('./services/socketService');
+        socketService.initialize(httpServer);
+
         // Start listening
-        const server = app.listen(env.PORT, env.HOST, () => {
-            logger.info(`✅ Server running on http://${env.HOST}:${env.PORT}`);
-            logger.info(`Environment: ${env.NODE_ENV}`);
-            logger.info(`API Docs: http://${env.HOST}:${env.PORT}/api/health`);
+        const server = httpServer.listen(env.PORT, env.HOST, () => {
+            console.log('\n' + '━'.repeat(50));
+            logger.info(`🚀 SERVER ONLINE`);
+            logger.info(`📡 URL: http://${env.HOST}:${env.PORT}`);
+            logger.info(`🛠️  MODE: ${env.NODE_ENV}`);
+            logger.info(`🏥 HEALTH: http://${env.HOST}:${env.PORT}/api/health`);
+            console.log('━'.repeat(50) + '\n');
         });
 
         // Graceful shutdown

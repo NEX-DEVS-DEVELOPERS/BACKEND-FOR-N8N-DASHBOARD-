@@ -85,3 +85,36 @@ export async function optionalAuthenticate(
 
     next();
 }
+/**
+ * Admin authentication middleware
+ * Verifies admin password from header or body
+ */
+export async function requireAdmin(
+    req: Request,
+    res: Response<ApiErrorResponse>,
+    next: NextFunction
+): Promise<void> {
+    try {
+        const { env } = await import('../config/env');
+        const adminPassword = req.headers['x-admin-password'] as string || req.body.adminPassword;
+
+        if (!adminPassword || adminPassword !== env.ADMIN_PANEL_PASSWORD) {
+            logger.warn('Admin access denied:', { ip: req.ip });
+            res.status(401).json({
+                success: false,
+                error: 'Invalid admin password',
+                statusCode: 401,
+            });
+            return;
+        }
+
+        next();
+    } catch (error) {
+        logger.error('Admin auth error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            statusCode: 500,
+        });
+    }
+}

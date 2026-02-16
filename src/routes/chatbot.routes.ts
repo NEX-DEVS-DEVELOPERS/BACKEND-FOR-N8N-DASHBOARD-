@@ -18,4 +18,16 @@ router.get('/config', authenticate, (req, res) => chatbotController.getConfig(re
 // POST /api/chat - Chat with Zappy
 router.post('/', authenticate, chatLimiter, (req, res) => chatbotController.chat(req, res));
 
+// GET /api/chat/sessions - Get user's chat sessions (with actual messages only)
+router.get('/sessions', authenticate, (req, res) => chatbotController.getSessions(req, res));
+
+// GET /api/chat/sessions/:sessionId - Load a specific session's messages
+router.get('/sessions/:sessionId', authenticate, (req, res) => chatbotController.loadSession(req, res));
+
+// DELETE /api/chat/sessions/:sessionId - Delete a session
+router.delete('/sessions/:sessionId', authenticate, (req, res) => chatbotController.deleteSession(req, res));
+
+// POST /api/chat/sessions - Create a new session
+router.post('/sessions', authenticate, (req, res) => chatbotController.createSession(req, res));
+
 export const chatbotRoutes = router;

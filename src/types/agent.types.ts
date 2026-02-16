@@ -18,6 +18,8 @@ export interface Agent {
     webhookUrl: string;
     schedule: string | null;
     status: AgentStatus;
+    method: 'GET' | 'POST';
+    inputPayload: string | null;
     lastRunAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
@@ -27,15 +29,19 @@ export interface Agent {
 export const createAgentSchema = z.object({
     name: z.string().min(1).max(255),
     webhookUrl: z.string().url(),
-    schedule: z.string().datetime().optional().nullable(),
+    schedule: z.string().optional().nullable(), // Relaxed to allow ISO strings from frontend
+    method: z.enum(['GET', 'POST']).optional().default('POST'),
+    inputPayload: z.string().optional().nullable(),
 });
 
 // Update Agent schema
 export const updateAgentSchema = z.object({
     name: z.string().min(1).max(255).optional(),
     webhookUrl: z.string().url().optional(),
-    schedule: z.string().datetime().optional().nullable(),
+    schedule: z.string().optional().nullable(),
     status: z.nativeEnum(AgentStatus).optional(),
+    method: z.enum(['GET', 'POST']).optional(),
+    inputPayload: z.string().optional().nullable(),
 });
 
 // Agent DTO (Data Transfer Object)

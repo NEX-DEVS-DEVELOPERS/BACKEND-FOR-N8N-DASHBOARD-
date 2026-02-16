@@ -384,14 +384,16 @@ export class AuthController {
      * Create a new user (for admin panel)
      */
     async createUser(
-        req: Request<{}, {}, { username: string; password: string; email?: string; plan?: string; adminPassword: string }>,
+        req: Request<{}, {}, { username: string; password: string; email?: string; plan?: string; adminPassword?: string }>,
         res: Response<ApiSuccessResponse<UserResponse> | ApiErrorResponse>
     ): Promise<void> {
         try {
             const { username, password, email, plan, adminPassword } = req.body;
+            const headerPassword = req.headers['x-admin-password'] as string;
 
-            // Verify admin password
-            if (!this.verifyAdminPassword(adminPassword)) {
+            // Verify admin password (check both body and header)
+            const passwordToVerify = adminPassword || headerPassword;
+            if (!passwordToVerify || !await this.verifyAdminPassword(passwordToVerify)) {
                 res.status(401).json({
                     success: false,
                     error: 'Invalid admin password',

@@ -4,6 +4,8 @@ import { helmetMiddleware, corsMiddleware, xssProtection, requestSizeValidator }
 import { errorHandler, notFoundHandler, correlationIdMiddleware } from './middleware/errorHandler';
 import { apiLimiter } from './middleware/rateLimiter';
 import { logger } from './utils/logger';
+import { validateApiKey } from './middleware/apiKey';
+import { encryptionMiddleware } from './middleware/encryption';
 
 // Import routes
 import authRoutes from './routes/auth.routes';
@@ -16,6 +18,11 @@ import adminRoutes from './routes/admin.routes';
 import settingsRoutes from './routes/settings.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import { chatbotRoutes } from './routes/chatbot.routes';
+import n8nLogsRoutes from './routes/n8n-logs.routes';
+import n8nProxyRoutes from './routes/n8n-proxy.routes';
+import paymentRoutes from './routes/payments.routes';
+import supportRoutes from './routes/support.routes';
+import notificationRoutes from './routes/notification.routes';
 
 // Import services for health check
 import { testConnection } from './config/database';
@@ -39,7 +46,12 @@ export function createApp(): Application {
     app.use(correlationIdMiddleware);
 
     // Body parsing middleware with size limits
-    app.use(express.json({ limit: '10mb' }));
+    app.use(express.json({
+        limit: '10mb',
+        verify: (req: any, _res, buf) => {
+            req.rawBody = buf.toString();
+        }
+    }));
     app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
     // Request size validation (additional layer)
@@ -48,17 +60,37 @@ export function createApp(): Application {
     // XSS protection
     app.use(xssProtection);
 
-    // Request logging
-    if (process.env.NODE_ENV !== 'test') {
-        app.use(morgan('combined', {
-            stream: {
-                write: (message: string) => logger.info(message.trim()),
-            },
-        }));
-    }
+    // --- PUBLIC ROUTES (No Security/Encryption) ---
 
-    // Health check endpoint (no rate limiting)
-    app.get('/api/health', async (req: Request, res: Response<HealthCheckResponse>) => {
+    // Root route (Dynamic Health Check)
+    app.get('/', async (_req: Request, res: Response) => {
+        const dbConnected = await testConnection();
+        res.status(dbConnected ? 200 : 503).json({
+            success: dbConnected,
+            message: dbConnected ? 'n8n Dashboard API Server is online' : 'Server is starting or experiencing issues',
+            database: dbConnected ? 'connected' : 'disconnected',
+            uptime: Math.floor(process.uptime()),
+            timestamp: new Date().toISOString()
+        });
+    });
+
+    // API root route (Public Info)
+    app.get('/api', async (_req: Request, res: Response) => {
+        const dbConnected = await testConnection();
+        res.status(dbConnected ? 200 : 503).json({
+            success: dbConnected,
+            message: 'n8n Dashboard API is active',
+            status: dbConnected ? 'healthy' : 'degraded',
+            endpoints: {
+                health: '/api/health',
+                auth: '/api/auth'
+            },
+            version: '1.0.0'
+        });
+    });
+
+    // Health check endpoint (Public)
+    app.get('/api/health', async (_req: Request, res: Response<HealthCheckResponse>) => {
         const dbConnected = await testConnection();
         const n8nReachable = await n8nService.testConnectivity();
 
@@ -74,6 +106,24 @@ export function createApp(): Application {
         res.status(statusCode).json(status);
     });
 
+    // --- SECURE ROUTES (/api prefix) ---
+
+    // 1. API Key validation (Global for /api)
+    app.use('/api', validateApiKey);
+
+    // 2. Response/Request Encryption (AES-256-GCM)
+    app.use('/api', encryptionMiddleware);
+
+    // Request logging
+    if (process.env.NODE_ENV !== 'test') {
+        const morganFormat = ':method :url :status :res[content-length] - :response-time ms';
+        app.use(morgan(morganFormat, {
+            stream: {
+                write: (message: string) => logger.info(message.trim()),
+            },
+        }));
+    }
+
     // Apply rate limiting to API routes
     app.use('/api/', apiLimiter);
 
@@ -88,6 +138,11 @@ export function createApp(): Application {
     app.use('/api/settings', settingsRoutes);
     app.use('/api/chat', chatbotRoutes);
     app.use('/api/dashboard', dashboardRoutes);
+    app.use('/api/n8n-logs', n8nLogsRoutes);
+    app.use('/api/n8n-proxy', n8nProxyRoutes);
+    app.use('/api/payments', paymentRoutes);
+    app.use('/api/support', supportRoutes);
+    app.use('/api/notifications', notificationRoutes);
 
     // 404 handler
     app.use(notFoundHandler);

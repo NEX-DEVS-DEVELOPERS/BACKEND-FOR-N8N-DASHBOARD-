@@ -14,10 +14,14 @@ export function validateWebhookUrl(url: string): boolean {
             return false;
         }
 
-        // Check against whitelist
-        return env.N8N_WEBHOOK_DOMAIN_WHITELIST.some((domain) =>
+        // Check against whitelist OR standard n8n cloud domains
+        const isWhitelisted = env.N8N_WEBHOOK_DOMAIN_WHITELIST.some((domain) =>
             url.startsWith(domain)
         );
+
+        const isN8nCloud = parsedUrl.hostname.endsWith('.app.n8n.cloud');
+
+        return isWhitelisted || isN8nCloud;
     } catch (error) {
         return false;
     }

@@ -18,8 +18,9 @@ if (result.error) {
 const envSchema = z.object({
     // Server
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-    PORT: z.string().transform(Number).default('3001'),
-    HOST: z.string().default('0.0.0.0'),
+    PORT: z.string().transform(Number).default('5000'),
+    HOST: z.string().default('localhost'),
+    BACKEND_API_KEY: z.string().min(32),
 
     // Database - Neon DB
     DATABASE_URL: z.string().url(),
@@ -28,6 +29,7 @@ const envSchema = z.object({
 
     // Authentication
     JWT_SECRET: z.string().min(32),
+    ENCRYPTION_KEY: z.string().min(64), // Hex string of 32 bytes
     JWT_EXPIRES_IN: z.string().default('12h'),
     JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
     BCRYPT_ROUNDS: z.string().transform(Number).default('12'),
@@ -62,6 +64,7 @@ const envSchema = z.object({
     GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required for the chatbot"),
     CLAUDE_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
+    OPENROUTER_API_KEY: z.string().optional(),
 
     // Model Configuration Per Plan
     MODEL_FREE: z.string().default('gemini-flash-latest'),
@@ -88,6 +91,7 @@ const envSchema = z.object({
     SUPPORT_EMAIL_ALI: z.string().email().optional(),
     SUPPORT_EMAIL_HASSAM_FAIZAN: z.string().email().optional(),
     SUPPORT_EMAIL_MUDASSIR_USMAN: z.string().email().optional(),
+    RESEND_API_KEY: z.string().optional(),
 
     // CORS & Security
     CORS_ORIGIN: z.string().transform(val => val.split(',')),

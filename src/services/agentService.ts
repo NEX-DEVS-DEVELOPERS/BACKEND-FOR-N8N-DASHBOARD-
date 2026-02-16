@@ -17,7 +17,8 @@ export class AgentService {
             // Fetch from database
             const agents = await query<Agent>(
                 `SELECT id, user_id as "userId", name, webhook_url as "webhookUrl", 
-                schedule, status, last_run_at as "lastRunAt", 
+                schedule, status, method, input_payload as "inputPayload",
+                last_run_at as "lastRunAt", 
                 created_at as "createdAt", updated_at as "updatedAt"
          FROM agents WHERE user_id = $1 ORDER BY created_at DESC`,
                 [userId]
@@ -40,7 +41,8 @@ export class AgentService {
         try {
             const agent = await querySingle<Agent>(
                 `SELECT id, user_id as "userId", name, webhook_url as "webhookUrl", 
-                schedule, status, last_run_at as "lastRunAt", 
+                schedule, status, method, input_payload as "inputPayload",
+                last_run_at as "lastRunAt", 
                 created_at as "createdAt", updated_at as "updatedAt"
          FROM agents WHERE id = $1 AND user_id = $2`,
                 [agentId, userId]
@@ -71,12 +73,13 @@ export class AgentService {
 
             // Insert into database
             const result = await querySingle<Agent>(
-                `INSERT INTO agents (user_id, name, webhook_url, schedule, status)
-         VALUES ($1, $2, $3, $4, $5)
+                `INSERT INTO agents (user_id, name, webhook_url, schedule, status, method, input_payload)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, user_id as "userId", name, webhook_url as "webhookUrl", 
-                   schedule, status, last_run_at as "lastRunAt", 
+                   schedule, status, method, input_payload as "inputPayload",
+                   last_run_at as "lastRunAt", 
                    created_at as "createdAt", updated_at as "updatedAt"`,
-                [userId, data.name, data.webhookUrl, data.schedule || null, status]
+                [userId, data.name, data.webhookUrl, data.schedule || null, status, data.method || 'POST', data.inputPayload || null]
             );
 
             if (!result) {
@@ -133,6 +136,16 @@ export class AgentService {
                 values.push(data.status);
             }
 
+            if (data.method !== undefined) {
+                updates.push(`method = $${paramCount++}`);
+                values.push(data.method);
+            }
+
+            if (data.inputPayload !== undefined) {
+                updates.push(`input_payload = $${paramCount++}`);
+                values.push(data.inputPayload);
+            }
+
             if (updates.length === 0) {
                 throw new Error('No fields to update');
             }
@@ -144,7 +157,8 @@ export class AgentService {
                 `UPDATE agents SET ${updates.join(', ')}
          WHERE id = $${paramCount++} AND user_id = $${paramCount++}
          RETURNING  id, user_id as "userId", name, webhook_url as "webhookUrl", 
-                   schedule, status, last_run_at as "lastRunAt", 
+                   schedule, status, method, input_payload as "inputPayload",
+                   last_run_at as "lastRunAt", 
                    created_at as "createdAt", updated_at as "updatedAt"`,
                 values
             );

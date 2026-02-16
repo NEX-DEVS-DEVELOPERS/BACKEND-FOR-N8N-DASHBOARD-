@@ -62,7 +62,7 @@ npm install
 npm run dev
 ```
 
-The server will start on `http://localhost:3001`.
+The server will start on `http://localhost:5000`.
 
 ### 4. Production Build
 

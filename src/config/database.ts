@@ -96,6 +96,8 @@ export async function initializeDatabase(): Promise<void> {
         webhook_url TEXT NOT NULL,
         schedule TIMESTAMP,
         status VARCHAR(50) DEFAULT 'Idle',
+        method VARCHAR(10) DEFAULT 'POST',
+        input_payload TEXT,
         last_run_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
@@ -189,7 +191,7 @@ export async function initializeDatabase(): Promise<void> {
       )
     `);
 
-    // Chat History table
+    // Chat History table (base table)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS chat_history (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -200,6 +202,70 @@ export async function initializeDatabase(): Promise<void> {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+
+    // Add optional columns to chat_history (ignore errors if they already exist)
+    try {
+      await pool.query(`ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS session_id UUID`);
+    } catch (e) { /* Column might already exist */ }
+
+    // Set up secure chat storage tables (using IF NOT EXISTS to preserve data)
+    try {
+      // Secure Chat Sessions table
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          session_key VARCHAR(64) NOT NULL,
+          title VARCHAR(100) DEFAULT 'New Conversation',
+          message_count INTEGER DEFAULT 0,
+          has_user_messages BOOLEAN DEFAULT false,
+          first_user_message_preview VARCHAR(100),
+          model_used VARCHAR(50),
+          total_tokens_used INTEGER DEFAULT 0,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW(),
+          expires_at TIMESTAMP DEFAULT (NOW() + INTERVAL '7 days')
+        )
+      `);
+
+      // Encrypted Chat Memory table - stores encrypted messages
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS chat_memory (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          encrypted_messages BYTEA NOT NULL,
+          encryption_iv BYTEA NOT NULL,
+          encryption_version INTEGER DEFAULT 1,
+          message_count INTEGER DEFAULT 0,
+          storage_size_bytes INTEGER DEFAULT 0,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+
+      // Chat Analytics Daily (Aggregated, not per-message)
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS chat_analytics_daily (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          analytics_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          total_sessions INTEGER DEFAULT 0,
+          total_messages_sent INTEGER DEFAULT 0,
+          total_messages_received INTEGER DEFAULT 0,
+          total_tokens_used INTEGER DEFAULT 0,
+          avg_response_time_ms INTEGER DEFAULT 0,
+          plan_tier VARCHAR(20),
+          created_at TIMESTAMP DEFAULT NOW(),
+          UNIQUE(user_id, analytics_date)
+        )
+      `);
+
+      logger.info('✅ Secure chat storage tables ready');
+    } catch (chatTableError: any) {
+      // Log the specific error for debugging
+      logger.warn('⚠️ Chat storage tables setup issue:', chatTableError?.message || chatTableError);
+    }
 
     // Dev Credit Logs table - tracks dev credit usage
     await pool.query(`
@@ -243,6 +309,36 @@ export async function initializeDatabase(): Promise<void> {
       )
     `);
 
+    // Invoices table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS invoices (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        invoice_number VARCHAR(50) NOT NULL UNIQUE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        amount DECIMAL(10, 2) NOT NULL,
+        currency VARCHAR(10) DEFAULT 'USD',
+        status VARCHAR(20) DEFAULT 'paid',
+        plan_name VARCHAR(50),
+        billing_period_start TIMESTAMP,
+        billing_period_end TIMESTAMP,
+        pdf_url TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // N8n Logs table  - Real-time logging from n8n webhooks
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS n8n_logs (
+        id SERIAL PRIMARY KEY,
+        run_id UUID NOT NULL,
+        agent_id TEXT NOT NULL,
+        log_message TEXT NOT NULL,
+        status TEXT DEFAULT 'running',
+        payload JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
     // Create indexes
     await pool.query('CREATE INDEX IF NOT EXISTS idx_agents_user_id ON agents(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status)');
@@ -255,6 +351,22 @@ export async function initializeDatabase(): Promise<void> {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires_at ON token_blacklist(expires_at)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history(session_id)');
+
+    // Secure Chat Storage indexes (only if tables were created)
+    try {
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_id ON chat_sessions(user_id)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_has_user_messages ON chat_sessions(has_user_messages)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_created_at ON chat_sessions(created_at DESC)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_expires_at ON chat_sessions(expires_at)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_memory_session_id ON chat_memory(session_id)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_memory_user_id ON chat_memory(user_id)');
+      await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_memory_unique_session ON chat_memory(session_id)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_analytics_daily_user_date ON chat_analytics_daily(user_id, analytics_date DESC)');
+    } catch (chatIndexError) {
+      logger.debug('Could not create chat storage indexes');
+    }
+
 
     // Dashboard table indexes
     await pool.query('CREATE INDEX IF NOT EXISTS idx_dev_credit_logs_user_id ON dev_credit_logs(user_id)');
@@ -264,6 +376,47 @@ export async function initializeDatabase(): Promise<void> {
     await pool.query('CREATE INDEX IF NOT EXISTS idx_changelog_entries_is_public ON changelog_entries(is_public)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_user_activity_log_user_id ON user_activity_log(user_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_user_activity_log_created_at ON user_activity_log(created_at)');
+
+    // N8n Logs indexes
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_n8n_logs_run_id ON n8n_logs(run_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_n8n_logs_agent_id ON n8n_logs(agent_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_n8n_logs_created_at ON n8n_logs(created_at)');
+
+
+    // User Dashboard Data table (for real-time updates)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_dashboard_data (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+        plan_features JSONB DEFAULT '{}',
+        support_requests_data JSONB DEFAULT '{}',
+        change_requests_data JSONB DEFAULT '{}',
+        support_timer INTEGER DEFAULT 0,
+        security_audits_last_check TIMESTAMP,
+        last_updated TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Create index for user_dashboard_data
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_user_dashboard_data_user_id ON user_dashboard_data(user_id)');
+
+    // Notifications table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        type VARCHAR(50) DEFAULT 'info',
+        is_read BOOLEAN DEFAULT false,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Create index for notifications
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at)');
 
     logger.info('✅ Database schema initialized successfully');
   } catch (error) {

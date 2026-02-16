@@ -1,63 +1,14 @@
-import { GoogleGenAI } from '@google/genai';
-import { agentService } from './agentService';
+import { streamText, ModelMessage } from 'ai';
+import { aiProvider } from '../utils/aiProvider';
 import { query } from '../config/database';
 import { logger } from '../utils/logger';
 import { env } from '../config/env';
-
-// Model configuration type
-interface ModelConfig {
-    model: string;
-    provider: 'gemini' | 'claude' | 'openai';
-}
+import { agentService } from './agentService';
 
 export class ChatbotService {
-    private ai: GoogleGenAI;
-
-    constructor() {
-        // Initialize Gemini Client with key from validated env using new SDK
-        this.ai = new GoogleGenAI({
-            apiKey: env.GEMINI_API_KEY
-        });
-    }
-
-    /**
-     * Get the model configuration based on user plan.
-     * In simulation mode, all plans use Gemini Flash but with different personas.
-     * When simulation mode is off, each plan uses its configured model/provider.
-     */
-    private getModelForPlan(userPlan: string): ModelConfig {
-        // Always use Gemini Flash in simulation mode for cost savings
-        if (env.MODEL_SIMULATION_MODE) {
-            return {
-                model: 'gemini-flash-latest',
-                provider: 'gemini'
-            };
-        }
-
-        // Real model selection based on plan
-        switch (userPlan.toLowerCase()) {
-            case 'enterprise':
-                return {
-                    model: env.MODEL_ENTERPRISE || 'claude-3-5-sonnet-20241022',
-                    provider: (env.MODEL_ENTERPRISE_PROVIDER as 'gemini' | 'claude' | 'openai') || 'claude'
-                };
-            case 'pro':
-                return {
-                    model: env.MODEL_PRO || 'gemini-1.5-pro',
-                    provider: (env.MODEL_PRO_PROVIDER as 'gemini' | 'claude' | 'openai') || 'gemini'
-                };
-            default: // free tier
-                return {
-                    model: env.MODEL_FREE || 'gemini-flash-latest',
-                    provider: (env.MODEL_FREE_PROVIDER as 'gemini' | 'claude' | 'openai') || 'gemini'
-                };
-        }
-    }
-
 
     /**
      * Get the welcome message based on the user's plan.
-     * @param userPlan 
      */
     getWelcomeMessage(userPlan: string): string {
         switch (userPlan) {
@@ -77,8 +28,6 @@ export class ChatbotService {
         // RAG: Fetch Context (Agents & Logs)
         const agents = await agentService.getUserAgents(userId);
 
-        // Safe query for logs - handling table existence or schema differences gracefully if needed
-        // Assuming log_entries and log_sessions tables exist as per previous controller code
         let logs: any[] = [];
         try {
             logs = await query(
@@ -96,11 +45,10 @@ Your goal is to help users manage their agents, debug workflows, and optimize pe
 
 **CRITICAL OUTPUT FORMATTING RULES:**
 1. Use **Markdown** for all formatting.
-2. Use \`code blocks\` for technical terms, variable names, or short commands.
-3. Use \`\`\`language\n code \n\`\`\` for longer code snippets.
-4. Use **bold** for emphasis on key points.
+2. Use \`code blocks\` for technical terms.
+3. Use \`\`\`language\n code \n\`\`\` for code snippets.
+4. Use **bold** for emphasis.
 5. Be concise but helpful.
-6. Do NOT use standard markdown headers like # or ##. Instead use **BOLD CAPS** for section headers if needed, or simple bullet points.
 
 **Current System Context:**
 - User Plan: ${userPlan.toUpperCase()}
@@ -111,29 +59,23 @@ Your goal is to help users manage their agents, debug workflows, and optimize pe
         let specificInstruction = "";
 
         if (userPlan === 'enterprise') {
-            // Simulate Claude 4.5 Sonnet
             specificInstruction = `
-**PERSONA: ENTERPRISE (Simulating Claude 4.5 Sonnet)**
-- Tone: Formal, Executive, Strategic, Highly Professional.
-- Capabilities: Deep architectural insights, security-focused, business-value oriented.
-- Structure: Use clear structured lists and executive summaries.
-- You are "Zappy Enterprise". Never mention you are Gemini.
+**PERSONA: ENTERPRISE**
+- Tone: Formal, Executive, Strategic.
+- Capabilities: Architectural insights, security-focused.
+- You are "Zappy Enterprise".
 `;
         } else if (userPlan === 'pro') {
-            // Simulate Gemini 3 Pro
             specificInstruction = `
-**PERSONA: PRO (Simulating Gemini 3 Pro)**
-- Tone: Technical, Precise, Detail-Oriented, "Power User" friendly.
-- Capabilities: Advanced debugging, code snippets, workflow optimization.
-- Structure: Step-by-step troubleshooting, technical explanations.
+**PERSONA: PRO**
+- Tone: Technical, Precise, Power User friendly.
+- Capabilities: Advanced debugging, optimization.
 - You are "Zappy Pro".
 `;
         } else {
-            // Free Tier
             specificInstruction = `
 **PERSONA: FREE (Standard)**
 - Tone: Helpful, Friendly, Concise.
-- Capabilities: Basic guidance, status checks, simple explanations.
 - You are "Zappy".
 `;
         }
@@ -142,60 +84,79 @@ Your goal is to help users manage their agents, debug workflows, and optimize pe
     }
 
     /**
-     * Process a chat message.
+     * Process a chat message using Vercel AI SDK streams.
+     * Returns a streamable response.
      */
-    async processChat(userId: string, userPlan: string, message: string, history: any[]): Promise<string> {
+    async createChatStream(userId: string, userPlan: string, messages: ModelMessage[]): Promise<any> {
         try {
             const systemInstruction = await this.generateSystemPrompt(userId, userPlan);
 
-            // IMPORTANT: Gemini requires history to start with 'user' role or be empty
-            // Filter out any leading assistant messages (like welcome messages)
-            let filteredHistory = [...history];
+            // Select model based on plan
+            const modelConfig = aiProvider.getModelForPlan(userPlan);
 
-            // Remove leading assistant messages
-            while (filteredHistory.length > 0 && filteredHistory[0].author === 'assistant') {
-                filteredHistory.shift();
-            }
-
-            // Convert history to new SDK format
-            // History comes from frontend as { author: 'user' | 'assistant', text: string }
-            // New SDK expects: { role: 'user' | 'model', parts: [{ text: string }] }
-            const contents = filteredHistory.map((msg: any) => ({
-                role: msg.author === 'user' || msg.author === 'me' ? 'user' : 'model',
-                parts: [{ text: msg.text }]
+            // Sanitize messages to ensure they match ModelMessage structure strictly
+            const sanitizedMessages: ModelMessage[] = messages.map(m => ({
+                role: m.role as 'user' | 'assistant' | 'system',
+                content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
             }));
 
-            // Add the current user message
-            contents.push({
-                role: 'user',
-                parts: [{ text: message }]
-            });
+            // Get model from provider. Primary is now OpenRouter via aiProvider.
+            let model = aiProvider.getModel(modelConfig.modelId, modelConfig.provider);
 
-            // Get model configuration based on user plan
-            const modelConfig = this.getModelForPlan(userPlan);
-            logger.info(`Using model: ${modelConfig.model} (provider: ${modelConfig.provider}) for plan: ${userPlan}`);
+            // If Simulation Mode is ON, force direct Gemini API (free, no credits)
+            if (env.MODEL_SIMULATION_MODE) {
+                model = aiProvider.getModel('gemini-2.0-flash-exp', 'gemini');
+            }
 
-            const response = await this.ai.models.generateContent({
-                model: modelConfig.model,
-                config: {
-                    systemInstruction: systemInstruction,
+            // Create stream
+            const result = await streamText({
+                model: model,
+                system: systemInstruction,
+                messages: sanitizedMessages,
+                maxOutputTokens: 800, // Reduced from 2000 to conserve OpenRouter credits and stay within free limits
+                onFinish: async ({ text }) => {
+                    // Save chat history after completion
+                    // We get the last user message from the 'messages' array
+                    const lastUserMessage = messages.slice().reverse().find(m => m.role === 'user')?.content;
+                    if (lastUserMessage && typeof lastUserMessage === 'string') {
+                        await this.saveChatHistory(userId, lastUserMessage, text, userPlan);
+                    }
                 },
-                contents,
             });
 
-            const responseText = response.text || '';
-
-            // Store Chat History
-            // We do this asynchronously to notblock the response
-            this.saveChatHistory(userId, message, responseText, userPlan).catch(err =>
-                logger.error('Failed to save chat history', err)
-            );
-
-            return responseText;
+            return result;
 
         } catch (error) {
-            logger.error('Chatbot Service Error:', error);
-            throw error;
+            logger.error('Chatbot Stream Creation Error:', error);
+            // Try fallback
+            try {
+                logger.info('Attempting fallback model...');
+                const fallbackModel = aiProvider.getFallbackModel();
+                const systemInstruction = await this.generateSystemPrompt(userId, userPlan);
+
+                // Sanitize messages again or reuse
+                const sanitizedMessages: ModelMessage[] = messages.map(m => ({
+                    role: m.role as 'user' | 'assistant' | 'system',
+                    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+                }));
+
+                const result = await streamText({
+                    model: fallbackModel,
+                    system: systemInstruction,
+                    messages: sanitizedMessages,
+                    maxOutputTokens: 800, // Reduced to stay within free tier limits
+                    onFinish: async ({ text }) => {
+                        const lastUserMessage = messages.slice().reverse().find(m => m.role === 'user')?.content;
+                        if (lastUserMessage && typeof lastUserMessage === 'string') {
+                            await this.saveChatHistory(userId, lastUserMessage, text, userPlan);
+                        }
+                    }
+                });
+                return result;
+            } catch (fallbackError) {
+                logger.error('Fallback failed:', fallbackError);
+                throw error;
+            }
         }
     }
 
@@ -210,13 +171,12 @@ Your goal is to help users manage their agents, debug workflows, and optimize pe
                     response,
                     JSON.stringify({
                         plan: userPlan,
-                        model: 'gemini-1.5-flash',
-                        timestamp: new Date().toISOString()
+                        timestamp: new Date().toISOString(),
+                        provider: 'vercel-ai-sdk'
                     })
                 ]
             );
         } catch (error) {
-            // If table doesn't exist, we might want to ignore or log
             logger.warn('Could not insert chat history - table might be missing or schema mismatch', error);
         }
     }
